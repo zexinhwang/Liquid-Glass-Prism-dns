@@ -2,7 +2,7 @@
 
 set -e
 
-REPO="mslxi/Liquid-Glass-Prism-dns"
+REPO="zexinhwang/Liquid-Glass-Prism-dns"
 BINARY_NAME="prism-agent"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_NAME="prism-agent"
@@ -36,89 +36,29 @@ parse_args() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --master)
-                if [ -n "$2" ] && [ "${2:0:2}" != "--" ]; then
-                    MASTER_ADDR="$2"
-                    shift 2
-                else
-                    error "--master requires a value"
-                fi
-                ;;
-            --secret)
-                if [ -n "$2" ] && [ "${2:0:2}" != "--" ]; then
-                    SECRET_TOKEN="$2"
-                    shift 2
-                else
-                    error "--secret requires a value"
-                fi
-                ;;
-            --name)
-                if [ -n "$2" ] && [ "${2:0:2}" != "--" ]; then
-                    SERVICE_NAME="$2"
-                    shift 2
-                else
-                    shift 1
-                fi
-                ;;
-            --ip)
-                if [ -n "$2" ] && [ "${2:0:2}" != "--" ]; then
-                    CUSTOM_IP="$2"
-                    shift 2
-                else
-                    shift 1
-                fi
-                ;;
-            --uninstall)
-                UNINSTALL_MODE=true
-                shift
-                ;;
-            --beta)
-                BETA_MODE=true
-                shift
-                ;;
-            --smart)
-                SMART_MODE=true
-                shift
-                ;;
-            *)
-                shift
-                ;;
+            --master) MASTER_ADDR="$2"; shift 2 ;;
+            --secret) SECRET_TOKEN="$2"; shift 2 ;;
+            --name) SERVICE_NAME="$2"; shift 2 ;;
+            --ip) CUSTOM_IP="$2"; shift 2 ;;
+            --uninstall) UNINSTALL_MODE=true; shift ;;
+            --beta) BETA_MODE=true; shift ;;
+            --smart) SMART_MODE=true; shift ;;
+            *) shift ;;
         esac
     done
 
-    if [ "$UNINSTALL_MODE" = true ]; then
-        return
-    fi
+    if [ "$UNINSTALL_MODE" = true ]; then return; fi
 
     if [ -z "$MASTER_ADDR" ] || [ -z "$SECRET_TOKEN" ]; then
-        echo -e "${YELLOW}Missing parameters!${NC}"
-        echo -e "Usage: ... | bash -s -- --master URL --secret TOKEN [--beta] [--smart]"
-        exit 1
+        error "Usage: ... | bash -s -- --master URL --secret TOKEN"
     fi
 }
 
-uninstall_agent() {
-    step "Uninstalling Prism Agent ($SERVICE_NAME)..."
-    
-    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-    systemctl disable "$SERVICE_NAME" 2>/dev/null || true
-    
-    if [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
-        rm "/etc/systemd/system/${SERVICE_NAME}.service"
-        systemctl daemon-reload
-    fi
-    
-    if [ -f "$INSTALL_DIR/$BINARY_NAME" ]; then
-        rm "$INSTALL_DIR/$BINARY_NAME"
-    fi
-    
-    info "Uninstallation completed."
-    exit 0
-}
-
+# =========================
+# 系统检测（关键）
+# =========================
 detect_system() {
     ARCH=$(uname -m)
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
     case "$ARCH" in
         x86_64) ARCH_SUFFIX="amd64" ;;
@@ -126,178 +66,166 @@ detect_system() {
         *) error "Unsupported architecture: $ARCH" ;;
     esac
 
-    ASSET_NAME="${BINARY_NAME}_${OS}_${ARCH_SUFFIX}"
-    info "Detected: ${OS} / ${ARCH_SUFFIX}"
+    if [ -f /etc/alpine-release ]; then
+        OS_FAMILY="alpine"
+        info "Detected Alpine Linux (OpenRC)"
+    else
+        OS_FAMILY="systemd"
+        info "Detected systemd-based Linux"
+    fi
+
+    ASSET_NAME="${BINARY_NAME}_linux_${ARCH_SUFFIX}"
 }
 
+# =========================
+# 下载程序
+# =========================
 download_binary() {
-    step "Fetching version info..."
+    step "Downloading binary..."
 
-    API_URL="https://api.github.com/repos/$REPO/releases"
-    
-    if [ "$BETA_MODE" = true ]; then
-        info "Mode: ${YELLOW}Beta Channel (Pre-release)${NC}"
-    else
-        info "Mode: ${GREEN}Stable Channel (Official)${NC}"
-    fi
-    
-    RESP=$(curl -s --connect-timeout 10 "$API_URL")
+    URL="https://github.com/$REPO/releases/latest/download/$ASSET_NAME"
 
-    if [ "$BETA_MODE" = true ]; then
-        # Beta: find the beta release with largest timestamp (format: beta-YYYYMMDDHHMMSS)
-        DOWNLOAD_URL=$(echo "$RESP" | awk -v asset="$ASSET_NAME" '
-            BEGIN { latest_ts = ""; latest_url = "" }
-            /"tag_name":/ { 
-                tag = $0
-                gsub(/.*"tag_name": *"|".*/, "", tag)
-                current_tag = tag
-            }
-            /"browser_download_url":/ && index($0, asset) {
-                url = $0
-                gsub(/.*"browser_download_url": *"|".*/, "", url)
-                if (index(current_tag, "beta-") == 1) {
-                    ts = current_tag
-                    gsub(/^beta-/, "", ts)
-                    if (ts > latest_ts) {
-                        latest_ts = ts
-                        latest_url = url
-                    }
-                }
-            }
-            END { print latest_url }
-        ')
-        VERSION=$(echo "$DOWNLOAD_URL" | grep -oE 'beta-[0-9]+' | head -1)
-    else
-        # Stable: find first non-prerelease with agent asset
-        DOWNLOAD_URL=$(echo "$RESP" | grep -E '"tag_name"|"prerelease"|"browser_download_url".*prism-agent' | \
-            awk -v asset="$ASSET_NAME" '
-                /"tag_name":/ { tag=$0; gsub(/.*"tag_name": *"|".*/, "", tag) }
-                /"prerelease":/ { prerelease=$0; gsub(/.*"prerelease": *|,.*/, "", prerelease) }
-                /"browser_download_url":/ && index($0, asset) { 
-                    url=$0; gsub(/.*"browser_download_url": *"|".*/, "", url)
-                    if (prerelease == "false") { print url; exit }
-                }
-            ')
-        VERSION=$(echo "$DOWNLOAD_URL" | grep -oE 'v[0-9]+\.[0-9]+[^/]*' | head -1)
-    fi
+    curl -L -o "/tmp/$BINARY_NAME" "$URL" --progress-bar
 
-    if [ -z "$DOWNLOAD_URL" ]; then
-        warn "Smart search failed, trying fallback..."
-        DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$ASSET_NAME"
-    fi
-
-    if [ -n "$VERSION" ]; then
-        info "Found agent version: ${CYAN}${VERSION}${NC}"
-    fi
-
-    info "Download URL: $DOWNLOAD_URL"
-    curl -L -o "/tmp/$BINARY_NAME" "$DOWNLOAD_URL" --progress-bar
-
-    if [ ! -f "/tmp/$BINARY_NAME" ] || [ ! -s "/tmp/$BINARY_NAME" ]; then
-        error "Download failed. Please check network or GitHub access."
+    if [ ! -s "/tmp/$BINARY_NAME" ]; then
+        error "Download failed"
     fi
 
     chmod +x "/tmp/$BINARY_NAME"
-    
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
-        info "Stopping old service..."
-        systemctl stop "$SERVICE_NAME"
-    fi
-
     mv "/tmp/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
+
+    # Alpine musl 提示
+    if [ "$OS_FAMILY" = "alpine" ]; then
+        if ! ldd "$INSTALL_DIR/$BINARY_NAME" 2>&1 | grep -q musl; then
+            warn "Binary may not support musl (Alpine)"
+            warn "Try: apk add gcompat"
+        fi
+    fi
 }
 
-configure_service() {
-    step "Configuring systemd service..."
+# =========================
+# systemd 服务
+# =========================
+configure_systemd() {
+    step "Configuring systemd..."
+
     SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-
-    EXEC_ARGS="--master \"$MASTER_ADDR\" --secret \"$SECRET_TOKEN\""
-    
-    if [ "$SMART_MODE" = true ]; then
-        EXEC_ARGS="$EXEC_ARGS --smart"
-    fi
-
-    if [ -n "$CUSTOM_IP" ]; then
-        EXEC_ARGS="$EXEC_ARGS --ip \"$CUSTOM_IP\""
-    fi
 
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=Liquid Glass Prism Agent ($SERVICE_NAME)
+Description=Prism Agent
 After=network.target
 
 [Service]
-Type=simple
-User=root
+ExecStart=$INSTALL_DIR/$BINARY_NAME --master "$MASTER_ADDR" --secret "$SECRET_TOKEN"
 Restart=always
-RestartSec=5s
-ExecStart=$INSTALL_DIR/$BINARY_NAME $EXEC_ARGS
-LimitNOFILE=65535
+User=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+    systemctl enable "$SERVICE_NAME"
 }
 
+# =========================
+# OpenRC 服务（Alpine）
+# =========================
+configure_openrc() {
+    step "Configuring OpenRC..."
+
+    SERVICE_FILE="/etc/init.d/${SERVICE_NAME}"
+
+    cat > "$SERVICE_FILE" <<EOF
+#!/sbin/openrc-run
+
+name="$SERVICE_NAME"
+command="$INSTALL_DIR/$BINARY_NAME"
+command_args="--master '$MASTER_ADDR' --secret '$SECRET_TOKEN'"
+command_background=true
+pidfile="/run/${SERVICE_NAME}.pid"
+
+depend() {
+    need net
+}
+EOF
+
+    chmod +x "$SERVICE_FILE"
+    rc-update add "$SERVICE_NAME" default
+}
+
+configure_service() {
+    if [ "$OS_FAMILY" = "alpine" ]; then
+        configure_openrc
+    else
+        configure_systemd
+    fi
+}
+
+# =========================
+# 启动服务
+# =========================
 start_service() {
     step "Starting service..."
-    systemctl restart "$SERVICE_NAME"
-    
-    info "Waiting for initialization..."
-    sleep 3
 
-    if ! systemctl is-active --quiet "$SERVICE_NAME"; then
-        error "Failed to start! Check logs: journalctl -u $SERVICE_NAME -n 20"
-    fi
-}
-
-show_result() {
-    LOGS=$(journalctl -u "$SERVICE_NAME" -n 50 --no-pager)
-    echo ""
-    echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}   Liquid Glass Prism Agent Installed!         ${NC}"
-    echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
-    echo ""
-    
-    if [ "$BETA_MODE" = true ]; then
-        echo -e "  Version: ${YELLOW}Beta (Pre-release)${NC}"
-    fi
-    
-    if [ "$SMART_MODE" = true ]; then
-        echo -e "  Feature: ${CYAN}Smart Mode Enabled${NC}"
-    fi
-
-    if echo "$LOGS" | grep -q "DNS Mode Started"; then
-        echo -e "  Mode:    ${CYAN}DNS Client${NC} (Set DNS to 127.0.0.1)"
-    elif echo "$LOGS" | grep -q "Proxy Mode Started"; then
-        echo -e "  Mode:    ${CYAN}Proxy Agent${NC} (Open ports 80/443)"
+    if [ "$OS_FAMILY" = "alpine" ]; then
+        rc-service "$SERVICE_NAME" restart
     else
-        warn "  Syncing config, check logs shortly."
+        systemctl restart "$SERVICE_NAME"
     fi
-    
-    echo ""
-    echo -e "  Uninstall: ${GREEN}curl -sL $SCRIPT_URL | bash -s -- --uninstall${NC}"
-    echo ""
-    echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
+
+    sleep 2
 }
 
-show_banner() {
-    echo ""
-    echo -e "${BLUE}╔══════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║       Liquid Glass Prism Agent Installer         ║${NC}"
-    echo -e "${BLUE}║       github.com/mslxi/Liquid-Glass-Prism-dns    ║${NC}"
-    echo -e "${BLUE}╚══════════════════════════════════════════════════╝${NC}"
-    echo ""
+# =========================
+# 卸载
+# =========================
+uninstall_agent() {
+    step "Uninstalling..."
+
+    if [ -f /etc/alpine-release ]; then
+        rc-service "$SERVICE_NAME" stop 2>/dev/null || true
+        rc-update del "$SERVICE_NAME" default 2>/dev/null || true
+        rm -f "/etc/init.d/${SERVICE_NAME}"
+    else
+        systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+        systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+        rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+        systemctl daemon-reload
+    fi
+
+    rm -f "$INSTALL_DIR/$BINARY_NAME"
+
+    info "Uninstalled."
+    exit 0
 }
 
+# =========================
+# 结果展示
+# =========================
+show_result() {
+    echo ""
+    echo -e "${GREEN}==== Install Complete ==== ${NC}"
+
+    if [ "$OS_FAMILY" = "alpine" ]; then
+        rc-service "$SERVICE_NAME" status || true
+    else
+        systemctl status "$SERVICE_NAME" --no-pager || true
+    fi
+
+    echo ""
+    echo "Uninstall:"
+    echo "curl -sL $SCRIPT_URL | bash -s -- --uninstall"
+}
+
+# =========================
+# 主流程
+# =========================
 main() {
-    show_banner
     check_root
     parse_args "$@"
-    
+
     if [ "$UNINSTALL_MODE" = true ]; then
         uninstall_agent
     fi
