@@ -2,11 +2,11 @@
 
 set -e
 
-REPO="zexinhwang/Liquid-Glass-Prism-dns"
+REPO="mslxi/Liquid-Glass-Prism-dns"
 BINARY_NAME="prism-agent"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_NAME="prism-agent"
-SCRIPT_URL="https://raw.githubusercontent.com/${REPO}/main/agent_install.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/zexinhwang/Liquid-Glass-Prism-dns/main/agent_install.sh"
 CUSTOM_IP=""
 
 RED='\033[0;31m'
@@ -142,7 +142,7 @@ detect_system() {
 download_binary() {
     step "Fetching version info..."
 
-    API_URL="https://api.github.com/repos/$REPO/releases"
+    API_URL="https://api.github.com/repos/${REPO}/releases"
     
     if [ "$BETA_MODE" = true ]; then
         info "Mode: ${YELLOW}Beta Channel (Pre-release)${NC}"
@@ -192,7 +192,7 @@ download_binary() {
 
     if [ -z "$DOWNLOAD_URL" ]; then
         warn "Smart search failed, trying fallback..."
-        DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$ASSET_NAME"
+        DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/$ASSET_NAME"
     fi
 
     if [ -n "$VERSION" ]; then
